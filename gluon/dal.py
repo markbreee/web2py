@@ -191,7 +191,13 @@ DEFAULT = lambda:0
 
 sql_locker = threading.RLock()
 thread = threading.local()
-
+gis = False
+try:
+    import gdal
+    import ogr
+    gis = True
+except ImportError:
+    logger.debug('No Geographic GDAL/ogr library not loaded')
 # internal representation of tables with field
 #  <table>.<field>, tables and fields may only be [a-zA-Z0-0_]
 
@@ -235,11 +241,13 @@ if not 'google' in drivers:
         drivers.append('pymysql')
     except ImportError:
         logger.debug('no pymysql driver')
-
+    #Determine whether GIS extensions of postgis are available
+    GIS = False
     try:
         import psycopg2
         from psycopg2.extensions import adapt as psycopg2_adapt
         drivers.append('PostgreSQL')
+        GIS = True
     except ImportError:
         logger.debug('no psycopg2 driver')
 
@@ -1598,6 +1606,25 @@ class BaseAdapter(ConnectionPool):
                     else:
                         query = query & newquery
         return query
+    
+    def area(self,geometricObject):
+        pt = ogr.Geometry(ogr.wkbPoint)
+
+    def within(self,geometricObject):
+        if  isinstance(geometricObject,ogr.):
+            raise SyntaxError("Supports only a geometric object as a paramter")
+        raise SyntaxError("This adapter does not support the geospatial operation within")
+
+    def distance(self,geometricObject):
+        if  isinstance(geometricObject,ogr.Geometry):
+            raise SyntaxError("Supports only a geometric object as a paramter")
+        raise SyntaxError("This adapter does not support the geospatial operation within")
+
+    #Shortcut which usualy returns a result sorted on distance and combined with limit this is very effective
+    def near(self,geometricObject):
+        if  isinstance(geometricObject,ogr.Geometry):
+            raise SyntaxError("Supports only a geometric object as a paramter")
+        raise SyntaxError("This adapter does not support the geospatial operation within")
 
 ###################################################################################
 # List of all the available adapters; they all extend BaseAdapter.
@@ -3820,7 +3847,11 @@ class MongoDBAdapter(NoSQLAdapter):
     def update(self,tablename,query,fields):
         raise RuntimeError, "Not implemented"
 
+    def near(self,FgeometricObject):
+        if isinstance(geometricObject,ogr.Geometry):
 
+        else:
+            raise SyntaxError()
 ########################################################################
 # end of adapters
 ########################################################################
@@ -5446,6 +5477,15 @@ class Expression(object):
     def with_alias(self,alias):
         return Expression(self.db,self.db._adapter.AS,self,alias,self.type)
 
+    #Gis methods ---> THESE ARE NOT ALL SUPPORTED BY ALL DATABASES NOR ALL THE DATATYPES !!! <---
+    def within(self,geometricObject):
+        return Expression(self.db,self.db._adapter.within,self,geometricObject)
+
+    def distance(self, geometricObject):
+        return Expression(self.db,self.db._adpater.distance,self,geometricObject)
+
+    def near(self, geometricObject):
+        return Expression(self.db,self.db._adapter.near,self,geometricObject)
     # for use in both Query and sortby
 
 
