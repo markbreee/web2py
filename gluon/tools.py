@@ -241,6 +241,7 @@ class Mail(object):
         bcc=None,
         reply_to=None,
         encoding='utf-8',
+        raw=False,
         headers={}
         ):
         """
@@ -320,11 +321,29 @@ class Mail(object):
             else:
                 return key
 
+        # encoded or raw text
+        def encoded_or_raw(text):
+            if raw:
+                text = encode_header(text)
+            return text
+
         if not isinstance(self.settings.server, str):
             raise Exception('Server address not specified')
         if not isinstance(self.settings.sender, str):
             raise Exception('Sender address not specified')
-        payload_in = MIMEMultipart.MIMEMultipart('mixed')
+
+        if not raw:
+            payload_in = MIMEMultipart.MIMEMultipart('mixed')
+        else:
+            # no encoding configuration for raw messages
+            if isinstance(message, basestring):
+                text = message.decode(encoding).encode('utf-8')
+            else:
+                text = message.read().decode(encoding).encode('utf-8')
+            # No charset passed to avoid transport encoding
+            # NOTE: some unicode encoded strings will produce
+            # unreadable mail contents.
+            payload_in = MIMEText.MIMEText(text)
         if to:
             if not isinstance(to, (list,tuple)):
                 to = [to]
@@ -346,7 +365,8 @@ class Mail(object):
         else:
             text = message
             html = None
-        if not text is None or not html is None:
+
+        if (not text is None or not html is None) and (not raw):
             attachment = MIMEMultipart.MIMEMultipart('alternative')
             if not text is None:
                 if isinstance(text, basestring):
@@ -361,7 +381,7 @@ class Mail(object):
                     html = html.read().decode(encoding).encode('utf-8')
                 attachment.attach(MIMEText.MIMEText(html, 'html',_charset='utf-8'))
             payload_in.attach(attachment)
-        if attachments is None:
+        if (attachments is None) or raw:
             pass
         elif isinstance(attachments, (list, tuple)):
             for attachment in attachments:
@@ -546,22 +566,23 @@ class Mail(object):
         else:
             # no cryptography process as usual
             payload=payload_in
-        payload['From'] = encode_header(self.settings.sender.decode(encoding))
+
+        payload['From'] = encoded_or_raw(self.settings.sender.decode(encoding))
         origTo = to[:]
         if to:
-            payload['To'] = encode_header(', '.join(to).decode(encoding))
+            payload['To'] = encoded_or_raw(', '.join(to).decode(encoding))
         if reply_to:
-            payload['Reply-To'] = encode_header(reply_to.decode(encoding))
+            payload['Reply-To'] = encoded_or_raw(reply_to.decode(encoding))
         if cc:
-            payload['Cc'] = encode_header(', '.join(cc).decode(encoding))
+            payload['Cc'] = encoded_or_raw(', '.join(cc).decode(encoding))
             to.extend(cc)
         if bcc:
             to.extend(bcc)
-        payload['Subject'] = encode_header(subject.decode(encoding))
+        payload['Subject'] = encoded_or_raw(subject.decode(encoding))
         payload['Date'] = time.strftime("%a, %d %b %Y %H:%M:%S +0000",
                                         time.gmtime())
         for k,v in headers.iteritems():
-            payload[k] = encode_header(v.decode(encoding))
+            payload[k] = encoded_or_raw(v.decode(encoding))
         result = {}
         try:
             if self.settings.server == 'logging':
@@ -576,12 +597,12 @@ class Mail(object):
                 if bcc:
                     xcc['bcc'] = bcc
                 from google.appengine.api import mail
-                attachments = attachments and [(a.my_filename,a.my_payload) for a in attachments]
+                attachments = attachments and [(a.my_filename,a.my_payload) for a in attachments if not raw]
                 if attachments:
                     result = mail.send_mail(sender=self.settings.sender, to=origTo,
                                             subject=subject, body=text, html=html,
                                             attachments=attachments, **xcc)
-                elif html:
+                elif html and (not raw):
                     result = mail.send_mail(sender=self.settings.sender, to=origTo,
                                             subject=subject, body=text, html=html, **xcc)
                 else:
@@ -832,7 +853,7 @@ class Auth(object):
         return URL(args=current.request.args,vars=current.request.vars)
 
     def __init__(self, environment=None, db=None, mailer=True,
-                 hmac_key=None, controller='default', cas_provider=None):
+                 hmac_key=None, controller='default', function='user', cas_provider=None):
         """
         auth=Auth(db)
 
@@ -851,6 +872,7 @@ class Auth(object):
         request = current.request
         session = current.session
         auth = session.auth
+        self.user_groups = auth and auth.user_groups or {}
         if auth and auth.last_visit and auth.last_visit + \
                 datetime.timedelta(days=0, seconds=auth.expiration) > request.now:
             self.user = auth.user
@@ -890,8 +912,9 @@ class Auth(object):
         settings.create_user_groups = True
 
         settings.controller = controller
-        settings.login_url = self.url('user', args='login')
-        settings.logged_url = self.url('user', args='profile')
+        settings.function = function
+        settings.login_url = self.url(function, args='login')
+        settings.logged_url = self.url(function, args='profile')
         settings.download_url = self.url('download')
         settings.mailer = (mailer==True) and Mail() or mailer
         settings.login_captcha = None
@@ -905,7 +928,7 @@ class Auth(object):
         settings.allow_basic_login = False
         settings.allow_basic_login_only = False
         settings.on_failed_authorization = \
-            self.url('user',args='not_authorized')
+            self.url(function, args='not_authorized')
 
         settings.on_failed_authentication = lambda x: redirect(x)
 
@@ -954,7 +977,7 @@ class Auth(object):
         settings.register_fields = None
         settings.register_verify_password = True
 
-        settings.verify_email_next = self.url('user', args='login')
+        settings.verify_email_next = self.url(function, args='login')
         settings.verify_email_onaccept = []
 
         settings.profile_next = self.url('index')
@@ -963,8 +986,8 @@ class Auth(object):
         settings.profile_fields = None
         settings.retrieve_username_next = self.url('index')
         settings.retrieve_password_next = self.url('index')
-        settings.request_reset_password_next = self.url('user', args='login')
-        settings.reset_password_next = self.url('user', args='login')
+        settings.request_reset_password_next = self.url(function, args='login')
+        settings.reset_password_next = self.url(function, args='login')
 
         settings.change_password_next = self.url('index')
         settings.change_password_onvalidation = []
@@ -985,7 +1008,7 @@ class Auth(object):
         messages.profile_save_button = 'Save profile'
         messages.submit_button = 'Submit'
         messages.verify_password = 'Verify Password'
-        messages.delete_label = 'Check to delete:'
+        messages.delete_label = 'Check to delete'
         messages.function_disabled = 'Function disabled'
         messages.access_denied = 'Insufficient privileges'
         messages.registration_verifying = 'Registration needs verification'
@@ -1155,7 +1178,7 @@ class Auth(object):
         if isinstance(prefix,str):
             prefix = T(prefix)
         if not action:
-            action=self.url('user')
+            action=self.url(self.settings.function)
         if prefix:
             prefix = prefix.strip()+' '
         s1,s2,s3 = separators
@@ -1297,7 +1320,7 @@ class Auth(object):
                 Field('role', length=512, default='',
                         label=self.messages.label_role),
                 Field('description', 'text',
-                        label=self.messages.label_description),
+                        label=self.messages.label_description),                
                 *settings.extra_fields.get(settings.table_group_name,[]),
                 **dict(
                     migrate=self.__get_migrate(
@@ -1495,6 +1518,7 @@ class Auth(object):
                                        expiration=self.settings.expiration,
                                        hmac_key = web2py_uuid())
                 self.user = user
+                self.update_groups()
                 return user
         else:
             # user not in database try other login methods
@@ -1763,7 +1787,7 @@ class Auth(object):
                 return cas.login_form()
             else:
                 # we need to pass through login again before going on
-                next = self.url('user',args='login')
+                next = self.url(self.settings.function, args='login')
                 redirect(cas.login_url(next))
 
         # process authenticated users
@@ -1785,6 +1809,8 @@ class Auth(object):
             self.log_event(log, user)
             session.flash = self.messages.logged_in
 
+        self.update_groups()
+            
         # how to continue
         if self.settings.login_form == self:
             if accepted_form:
@@ -1929,7 +1955,8 @@ class Auth(object):
                 session.auth = Storage(user=user, last_visit=request.now,
                                        expiration=self.settings.expiration,
                                        hmac_key = web2py_uuid())
-                self.user = user
+                self.user = user              
+                self.update_groups()
                 session.flash = self.messages.logged_in
             self.log_event(log, form.vars)
             callback(onaccept,form)
@@ -2463,6 +2490,17 @@ class Auth(object):
             return SQLFORM.factory(Field('user_id', 'integer'))
         return self.user
 
+    def update_groups(self):
+        if not self.user:
+            return
+        user_groups = self.user_groups = current.session.auth.user_groups = {}
+        memberships = self.db(self.settings.table_membership.user_id
+                              == self.user.id).select()
+        for membership in memberships:
+            group = self.settings.table_group(membership.group_id)
+            if group:
+                user_groups[membership.group_id] = group.role
+
     def groups(self):
         """
         displays the groups and their roles for the logged in user
@@ -2585,6 +2623,7 @@ class Auth(object):
         self.db(self.settings.table_group.id == group_id).delete()
         self.db(self.settings.table_membership.group_id == group_id).delete()
         self.db(self.settings.table_permission.group_id == group_id).delete()
+        self.update_groups()
         self.log_event(self.messages.del_group_log,dict(group_id=group_id))
 
     def id_group(self, role):
@@ -2647,6 +2686,7 @@ class Auth(object):
             return record.id
         else:
             id = membership.insert(group_id=group_id, user_id=user_id)
+        self.update_groups()
         self.log_event(self.messages.add_membership_log,
                        dict(user_id=user_id, group_id=group_id))
         return id
@@ -2663,9 +2703,11 @@ class Auth(object):
         membership = self.settings.table_membership
         self.log_event(self.messages.del_membership_log,
                        dict(user_id=user_id,group_id=group_id))
-        return self.db(membership.user_id
-                       == user_id)(membership.group_id
-                                   == group_id).delete()
+        ret = self.db(membership.user_id
+                      == user_id)(membership.group_id
+                                  == group_id).delete()
+        self.update_groups()
+        return ret
 
     def has_permission(
         self,
@@ -2839,7 +2881,7 @@ class Auth(object):
                              current_record='parent_record'))
 
         """
-        if archive_current and not form.record:
+        if not archive_current and not form.record:
             return None
         table = form.table
         if not archive_table:
@@ -3155,8 +3197,7 @@ class Crud(object):
         method: Crud.delete(table, record_id, [next=DEFAULT
             [, message=DEFAULT]])
         """
-        if not (isinstance(table, self.db.Table) or table in self.db.tables) \
-                or not str(record_id).isdigit():
+        if not (isinstance(table, self.db.Table) or table in self.db.tables):
             raise HTTP(404)
         if not isinstance(table, self.db.Table):
             table = self.db[table]
@@ -4104,4 +4145,5 @@ class PluginManager(object):
 if __name__ == '__main__':
     import doctest
     doctest.testmod()
+
 

@@ -8,6 +8,34 @@
 ## - download is for downloading files uploaded in the db (does streaming)
 ## - call exposes all registered services (none by default)
 #########################################################################
+import csv
+import ogr
+
+
+def displayPoi():
+    box = ogr.Geometry(ogr.wkbLineString )
+    box.AddPoint(34.08,-84.27)
+    box.AddPoint(34.08,-84.26)
+    box.AddPoint(35,-84.26)
+    box.AddPoint(35,-84.27)
+    box.CloseRings()
+    r=[]
+    #try:
+    return db(db.poi.poi.ST_within(box)).select(db.poi.ALL,limitby=(0,1000))
+    #except:
+    #    return db(db.poi.poi.ST_within(box))._select(db.poi.ALL,limitby=(0,1000))
+    #return r
+    
+def importPoi():
+    pois = csv.reader(open('/home/beheerder/import.csv', 'rb'))
+    fault = csv.writer(open('/home/beheerder/fault.csv', 'wb'))
+    for row in pois:
+        try:
+            p = ogr.Geometry(ogr.wkbPoint)
+            p.AddPoint(float(row[0]),float(row[1]))
+            db.poi.insert(poi=p,name=str(row[2]))
+        except:
+            pass
 
 def index():
     """
@@ -33,14 +61,12 @@ def user():
     """
     return dict(form=auth())
 
-
 def download():
     """
     allows downloading of uploaded files
     http://..../[app]/default/download/[filename]
     """
     return response.download(request,db)
-
 
 def call():
     """
@@ -50,7 +76,6 @@ def call():
     supports xml, json, xmlrpc, jsonrpc, amfrpc, rss, csv
     """
     return service()
-
 
 @auth.requires_signature()
 def data():
@@ -68,4 +93,3 @@ def data():
       LOAD('default','data.load',args='tables',ajax=True,user_signature=True)
     """
     return dict(form=crud())
-
